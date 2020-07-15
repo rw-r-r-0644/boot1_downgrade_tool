@@ -29,6 +29,7 @@
 #include "system/irq.h"
 #include "system/exi.h"
 #include "system/crypto.h"
+#include "storage/nand.h"
 #include "storage/sdcard.h"
 #include "storage/fatfs/elm.h"
 #include "application.h"
@@ -44,6 +45,7 @@ void NORETURN _main(void* base) {
 	srand(read32(LT_TIMER));
 	crypto_initialize();
 	crypto_read_otp();
+    nand_initialize(BANK_SLC);
 	sdcard_init();
 	int res = ELM_Mount();
 	if (res) {
@@ -55,6 +57,7 @@ void NORETURN _main(void* base) {
 
 	ELM_Unmount();
 	sdcard_exit();
+    nand_deinitialize();
 	irq_disable(IRQ_SD0);
 	irq_shutdown();
 	mem_shutdown();

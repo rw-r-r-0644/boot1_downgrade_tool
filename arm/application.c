@@ -100,8 +100,7 @@ load_sdcard_boot1_image(char *path)
 int
 load_nand_boot1_image(int slot)
 {
-	static u8 pagedata[PAGE_SIZE];
-	static u8 pageecc[ECC_BUFFER_ALLOC] ALIGNED(128);
+	static u8 pagedata[PAGE_SIZE] ALIGNED(32);
 	int res, nand_block, nand_start_page, page, i;
 
 	unload_boot1_image();
@@ -109,20 +108,17 @@ load_nand_boot1_image(int slot)
 	nand_block = BOOT_BLOCK(seeprom_boot1_params[slot].nand_block);
 	nand_start_page = nand_block * BLOCK_SIZE;
 
-	nand_initialize(NAND_BANK_SLC);
-
 	for (i = 0; i < BLOCK_SIZE; i++) {
 		page = nand_start_page + i;
 
 		/* read page */
-		nand_read_page(page, pagedata, pageecc);
-		nand_wait();
-
-		/* correct ecc errors */
-		res = nand_correct(page, pagedata, pageecc);
-		if (res == NAND_ECC_UNCORRECTABLE) {
-			printf("error: encountered uncorrectable ecc error\n");
+		res = nand_read_page(page, pagedata, NULL);
+        if (res < 0) {
+			printf("error: failed to read page %d\n", page);
 			return -1;
+		}
+		if (res) {
+			printf("warning: corrected ecc errors in page %d\n", page);
 		}
 
 		/* copy page content */
@@ -284,55 +280,37 @@ clear_seeprom_boot1_parameters_checksum(int slot)
 	return 0;
 }
 
-void
-create_page_spare(u8 *pagedata,
-				  u8 *pagespare)
-{
-	/* clear the spare buffer */
-	memset(pagespare, 0, PAGE_SPARE_SIZE);
-
-	/* mark the page as a good page */
-	pagespare[0] = 0xff;
-	
-	/* compute page ecc */
-	calc_ecc(pagedata, pagespare + 0x30);
-	calc_ecc(pagedata + 512, pagespare + 0x34);
-	calc_ecc(pagedata + 1024, pagespare + 0x38);
-	calc_ecc(pagedata + 1536, pagespare + 0x3C);
-}
-
 int
 flash_boot1_image(int slot)
 {
-	static u8 pageecc[ECC_BUFFER_ALLOC] ALIGNED(128);
-	static u8 pagedata[PAGE_SIZE];
+	static u8 pagedata[PAGE_SIZE] ALIGNED(32);
 	int nand_block, nand_start_page, page, i;
 
 	nand_block = BOOT_BLOCK(seeprom_boot1_params[slot].nand_block);
 	nand_start_page = nand_block * BLOCK_SIZE;
 
-	nand_initialize(NAND_BANK_SLC);
+	/* erase the boot block first */
+	if (nand_erase_block(nand_block) < 0) {
+		printf("error: failed to erase boot block %d\n", nand_block);
+		return -1;
+	}
 
+	/* write the new boot image */
 	for (i = 0; i < BLOCK_SIZE; i++) {
 		page = nand_start_page + i;
 
-		memset(pageecc, 0, sizeof(pageecc));
 		memcpy(pagedata, &boot1_image[i * PAGE_SIZE], PAGE_SIZE);
 
-		nand_write_page(page, pagedata, pageecc);
-		nand_wait();
-
-		pageecc[0] = 0xff;
-		memcpy(&pageecc[0x30], &pageecc[0x40], 0x10);
-
-		nand_write_page_ecc(page, pageecc);
-		nand_wait();
+		if (nand_write_page(page, pagedata, NULL) < 0) {
+			printf("error: failed to write page %d\n", page);
+			return -1;
+		}
 	}
 
 	return 0;
 }
 
-void
+int
 update_seeprom_boot1_parameters(int slot)
 {
 	int res;
@@ -495,7 +473,6 @@ app_run()
 		printf(">> Succesfully verified the flashed image\n");
 	}
 
-#if 0
 	/*
 	 * Update the install slot seeprom parameters
 	 */
@@ -507,21 +484,56 @@ app_run()
 	}
 
 	/*
+	 * If the installed version is newer than the current version,
+	 * we're done: boot0 will always load the newer boot1 version.
+	 */
+	if (boot1_infoblock->version > seeprom_boot1_params[boot_slot].version) {
+		goto complete;
+	}
+
+	/*
+	 * We can force boot0 to boot an older image by corrupting
+	 * the newer image's SEEPROM checksum. Inform the user of
+	 * this possibility.
+	 */
+	printf("\n");
+	printf(">> The installed image version is not newer than the current boot image.\n");
+	printf(">> boot0 can be forced to load the installed image by corrupting\n");
+	printf(">> the current boot image SEEPROM checksum.\n");
+
+	/*
+	 * Wait for user confirmation
+	 */
+	printf("\n");
+	printf(">> FORCE BOOT0 TO LOAD THE INSTALLED IMAGE?\n");
+	printf(">> Press EJECT to confirm, POWER to ignore\n");
+	while (1) {
+		u8 events = smc_get_events();
+		if (events & SMC_POWER_BUTTON) {
+			goto complete;
+		}
+		if (events & SMC_EJECT_BUTTON) {
+			printf("Forcing boot0 to load the installed image...\n");
+			break;
+		}
+	}
+	printf("\n");
+
+	/*
 	 * Now clear the old parameters checksum to ensure that boot0 will
 	 * load the boot1 version we just installed
 	 */
-	// WARNING: THIS IS RISKY, ONLY UNCOMMENT ONCE EVRYTHING IS CONFIRMED TO BE WORKING
-	//if (clear_seeprom_boot1_parameters_checksum(boot_slot) != 0) {
-	//	printf(">> Failed to clear slot %d checksum\n", boot_slot);
-	//	goto end;
-	//} else {
-	//	printf(">> Cleared slot %d checksum\n", boot_slot);
-	//}
+	if (clear_seeprom_boot1_parameters_checksum(boot_slot) != 0) {
+		printf(">> Failed to clear slot %d checksum\n", boot_slot);
+		goto end;
+	} else {
+		printf(">> Cleared slot %d checksum\n", boot_slot);
+	}
 
+complete:
 	printf("\n");
-	printf(">> DOWNGRADE COMPLETED SUCCESSFULLY!\n");
+	printf(">> INSTALL COMPLETED SUCCESSFULLY!\n");
 	printf("\n");
-#endif
 
 end:
 	printf("Press POWER to reboot.\n");
