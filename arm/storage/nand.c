@@ -52,7 +52,9 @@
 /* NAND_BANK definitions */
 #define BANK_FL_4           (0x00000004) /* set by bsp:fla for revisions after latte A2X */
 
+#if NAND_WRITE_ENABLED
 static u8 nand_status_buf[STATUS_BUF_SIZE] ALIGNED(256);
+#endif
 static u8 nand_spare_buf[SPARE_BUF_SIZE] ALIGNED(256);
 
 static u32 nand_enabled_banks = BANK_SLC;
@@ -113,6 +115,8 @@ void nand_set_config(int write_enable)
          | nand_enabled_banks; 
     write32(NAND_BANK, bank);
 }
+
+#if NAND_WRITE_ENABLED
 
 int nand_erase_block(u32 blockno)
 {
@@ -273,26 +277,31 @@ int nand_write_page(u32 pageno, void *data, void *spare)
     return 0;
 }
 
-int nand_ecc_correct(u8 *data, u32 *ecc_save_buf, u32 *ecc_calc_buf, u32 size)
+#endif
+
+int nand_ecc_correct(u8 *data, u32 *ecc_save, u32 *ecc_calc, u32 size)
 {
-    u32 ecc_save, ecc_calc, syndrome;
+    u32 syndrome;
     u16 odd, even;
 
     /* check if the page contain ecc errors */
-    if (!memcmp(ecc_calc_buf, ecc_save_buf, size)) {
+    if (!memcmp(ecc_save, ecc_calc, size)) {
         return 0;
     }
 
     /* correct ecc errors */
     for (int i = 0; i < (size / 4); i++) {
-        ecc_save = __builtin_bswap32(ecc_save_buf[i]);
-        ecc_calc = __builtin_bswap32(ecc_calc_buf[i]);
-        if (ecc_calc == ecc_save) {
+        if (ecc_save[i] == ecc_calc[i]) {
+            continue;
+        }
+
+        /* don't try to correct unformatted pages */
+        if (ecc_save[i] == 0xffffffff) {
             continue;
         }
 
         /* calculate ecc syndrome */
-        syndrome = (ecc_save ^ ecc_calc) & 0x0fff0fff;
+        syndrome = (ecc_save[i] ^ ecc_calc[i]) & 0x0fff0fff;
         if ((syndrome & (syndrome - 1)) == 0) {
             continue;
         }

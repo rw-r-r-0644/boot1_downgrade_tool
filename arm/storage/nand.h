@@ -1,6 +1,8 @@
 #pragma once
 #include "common/types.h"
 
+#define NAND_WRITE_ENABLED  1
+
 /* page size in bytes */
 #define PAGE_SIZE           0x800
 
@@ -29,11 +31,13 @@ void nand_deinitialize(void);
 /* read page and spare */
 int nand_read_page(u32 pageno, void *data, void *spare);
 
+#if NAND_WRITE_ENABLED
 /* write page and spare */
 int nand_write_page(u32 pageno, void *data, void *spare);
 
 /* erase a block of pages */
 int nand_erase_block(u32 blockno);
+#endif
 
 /* set enabled nand banks */
 void nand_enable_banks(u32 bank);
